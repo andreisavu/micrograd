@@ -1,18 +1,56 @@
-use std::fmt;
 use std::ops;
+use std::{cell::RefCell, rc::Rc};
+use std::iter::zip;
 
-#[derive(Clone, PartialEq, Debug)]
-struct Value(f64, Vec<Value>);
+#[derive(Debug)]
+enum Op {
+    None,
+    Plus,
+    Multiply,
+    Tanh,
+}
 
-fn val(data: f64) -> Value {
-    Value(data, Vec::new())
+#[derive(Debug)]
+struct ValueState {
+    value: f64,
+    children: Vec<Value>,
+    gradient: f64,
+    op: Op,
+}
+
+#[derive(Clone, Debug)]
+struct Value(Rc<RefCell<ValueState>>);
+
+impl Value {
+    fn new(value: f64) -> Value {
+        Value(Rc::new(RefCell::new(ValueState {
+            value: value,
+            children: Vec::new(),
+            gradient: 0.0,
+            op: Op::None,
+        })))
+    }
+
+    fn tanh(self) -> Value {
+        Value(Rc::new(RefCell::new(ValueState {
+            value: self.0.borrow().value.tanh(),
+            children: vec![self.clone()],
+            gradient: 0.0,
+            op: Op::Tanh,
+        })))
+    }
 }
 
 impl ops::Add<Value> for Value {
     type Output = Value;
 
     fn add(self, rhs: Value) -> Value {
-        Value(self.0 + rhs.0, vec![self, rhs])
+        Value(Rc::new(RefCell::new(ValueState {
+            value: self.0.borrow().value + rhs.0.borrow().value,
+            children: vec![self.clone(), rhs.clone()],
+            gradient: 0.0,
+            op: Op::Plus,
+        })))
     }
 }
 
@@ -20,32 +58,135 @@ impl ops::Mul<Value> for Value {
     type Output = Value;
 
     fn mul(self, rhs: Value) -> Value {
-        Value(self.0 * rhs.0, vec![self, rhs])
+        Value(Rc::new(RefCell::new(ValueState {
+            value: self.0.borrow().value * rhs.0.borrow().value,
+            children: vec![self.clone(), rhs.clone()],
+            gradient: 0.0,
+            op: Op::Multiply,
+        })))
     }
 }
 
-impl fmt::Display for Value {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        if self.1.len() > 0 {
-            let last_index = self.1.len() - 1;
-            write!(f, "V({}, [", self.0)?;
-            for (i, child) in self.1.iter().enumerate() {
-                write!(f, "{}", child)?;
-                if i < last_index {
-                    write!(f, ", ")?
-                }
+fn compute_gradients(out: &Value) {
+    out.0.borrow_mut().gradient = 1.0;
+
+    fn _reset_children_gradients(node: &Value) {
+        for children in node.0.borrow().children.iter() {
+            children.0.borrow_mut().gradient = 0.0;
+            _reset_children_gradients(children);
+        }
+    }
+
+    fn _compute_children_gradients(node: &Value) {
+        let out_gradient = node.0.borrow().gradient;
+        let out_value = node.0.borrow().value;
+        match node.0.borrow().op {
+            Op::Plus => {
+                node.0.borrow().children[0].0.borrow_mut().gradient += out_gradient;
+                node.0.borrow().children[1].0.borrow_mut().gradient += out_gradient;
             }
-            write!(f,"])")
-        } else {
-            write!(f, "V({})", self.0)
+            Op::Multiply => {
+                node.0.borrow().children[0].0.borrow_mut().gradient +=
+                    node.0.borrow().children[1].0.borrow().value * out_gradient;
+                node.0.borrow().children[1].0.borrow_mut().gradient +=
+                    node.0.borrow().children[0].0.borrow_mut().value * out_gradient;
+            }
+            Op::Tanh => {
+                node.0.borrow().children[0].0.borrow_mut().gradient +=
+                    (1.0 - out_value * out_value) * out_gradient;
+            }
+            _ => (),
+        }
+        for children in node.0.borrow().children.iter() {
+            _compute_children_gradients(children);
+        }
+    }
+
+    _reset_children_gradients(out);
+    _compute_children_gradients(out)
+}
+
+fn dump(out: &Value) {
+    fn _dump(out: &Value, prefix: String) {
+        println!(
+            "{}V={:?} O={:?} G={:?} ID={:?}",
+            prefix,
+            out.0.borrow().value,
+            out.0.borrow().op,
+            out.0.borrow().gradient,
+            out.0.as_ptr()
+        );
+        for children in out.0.borrow().children.iter() {
+            _dump(children, format!("{}   ", prefix))
+        }
+    }
+    _dump(out, format!(""));
+}
+
+struct Neuron {
+    inputs: Vec<Value>,
+    weights: Vec<Value>,
+    bias: Value,
+    output: Value
+}
+
+impl Neuron {
+    fn new(inputs: &[f64], weights: &[f64], bias: f64) -> Neuron {
+        let mut input_values = Vec::new();
+        let mut weight_values = Vec::new();
+
+        let mut output = Value::new(0.0);
+        for (raw_input, raw_weight) in zip(inputs, weights) {
+            let input = Value::new(*raw_input);
+            input_values.push(input.clone());
+
+            let weight = Value::new(*raw_weight);
+            weight_values.push(weight.clone());
+
+            output = output + input * weight;
+        }
+
+        let bias_value = Value::new(bias);
+        Neuron {
+            inputs: input_values,
+            weights: weight_values,
+            bias: bias_value.clone(),
+            output: (output + bias_value).tanh()
         }
     }
 }
 
 fn main() {
-    let a = val(1.0);
-    let b = val(2.0);
-    let c = val(3.0);
-    let d = a * b + c;
-    println!("{}", d);
+    let neuron = Neuron::new(
+        &[2.0, 0.0],
+        &[-3.0, 1.0],
+        6.8813735870195432
+    );
+
+    compute_gradients(&neuron.output);
+
+    dump(&neuron.output);
 }
+
+// fn main() {
+//     let a = val(-2.0);
+//     let b = val(3.0);
+
+//     let d = mul(&a, &b);
+//     let e = add(&a, &b);
+
+//     let f = mul(&d, &e);
+
+//     compute_gradients(&f);
+
+//     dump(&f);
+// }
+
+// fn main() {
+//     let a = val(3.0);
+//     let b = add(&a, &a);
+
+//     compute_gradients(&b);
+
+//     dump(&b);
+// }
