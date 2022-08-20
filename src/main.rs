@@ -163,13 +163,13 @@ fn main() {
 }
 
 // fn main() {
-//     let a = val(-2.0);
-//     let b = val(3.0);
+//     let a = Value::new(-2.0);
+//     let b = Value::new(3.0);
 
-//     let d = mul(&a, &b);
-//     let e = add(&a, &b);
+//     let d = a.clone() + b.clone();
+//     let e = a.clone() + b.clone();
 
-//     let f = mul(&d, &e);
+//     let f = d * e;
 
 //     compute_gradients(&f);
 
@@ -177,8 +177,8 @@ fn main() {
 // }
 
 // fn main() {
-//     let a = val(3.0);
-//     let b = add(&a, &a);
+//     let a = Value::new(3.0);
+//     let b = a.clone() + a.clone();
 
 //     compute_gradients(&b);
 
