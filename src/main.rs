@@ -124,9 +124,6 @@ fn dump(out: &Value) {
 }
 
 struct Neuron {
-    inputs: Vec<Value>,
-    weights: Vec<Value>,
-    bias: Value,
     output: Value
 }
 
@@ -148,9 +145,6 @@ impl Neuron {
 
         let bias_value = Value::new(bias);
         Neuron {
-            inputs: input_values,
-            weights: weight_values,
-            bias: bias_value.clone(),
             output: (output + bias_value).tanh()
         }
     }
