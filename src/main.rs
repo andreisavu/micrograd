@@ -333,6 +333,14 @@ impl Layer {
         }
         result
     }
+
+    fn parameters(&self) -> Vec<Value> {
+        let mut parameters: Vec<Value> = Vec::new();
+        for neuron in self.0.iter() {
+            parameters.append(&mut neuron.parameters())
+        }
+        parameters
+    }
 }
 
 struct MLP(Vec<Layer>);
@@ -364,15 +372,77 @@ impl MLP {
         sizes.append(&mut self.0.iter().map(|el| el.0.len()).collect::<Vec<usize>>());
         sizes
     }
+
+    fn parameters(&self) -> Vec<Value> {
+        let mut parameters: Vec<Value> = Vec::new();
+        for layer in self.0.iter() {
+            parameters.append(&mut layer.parameters())
+        }
+        parameters
+    }
+}
+
+fn sum_of_squared_errors_loss(actual: Vec<Value>, expected: Vec<Value>) -> Value {
+    assert!(actual.len() == expected.len());
+    let mut result = Value::new(0.0);
+    for (left, right) in zip(actual, expected) {
+        let delta = left - right;
+        result = result + delta.clone() * delta.clone()
+    }
+    result
+}
+
+fn train(mlp: &MLP, xs: &[&[f64]], ys: &[f64]) {
+    let mut count = 0;
+
+    let inputs = xs
+        .iter()
+        .map(|el| Value::vec(el))
+        .collect::<Vec<Vec<Value>>>();
+
+    let expected = ys.iter().map(|el| Value::new(*el)).collect::<Vec<Value>>();
+
+    while count < 5000 {
+        let mut outputs: Vec<Value> = Vec::new();
+
+        for entry in inputs.iter() {
+            outputs.push(mlp.forward(entry.to_vec()))
+        }
+
+        let loss = sum_of_squared_errors_loss(outputs, expected.clone());
+        loss.backward();
+
+        for parameter in mlp.parameters() {
+            parameter.0.borrow_mut().value += -0.005 * parameter.gradient();
+        }
+
+        if count % 100 == 0 {
+            println!("#{} Loss: {}", count, loss.value());
+        }
+        count += 1;
+    }
 }
 
 fn main() {
+    let xs: &[&[f64]] = &[
+        &[1.0, 6.0, 0.0],
+        &[0.0, 3.0, 1.0],
+        &[2.0, 4.0, 0.0],
+        &[0.0, 3.0, 2.0],
+        &[3.0, 2.0, 0.0],
+        &[0.0, 1.0, 3.0],
+    ];
+
+    let ys: &[f64] = &[1.0, -1.0, 1.0, -1.0, 1.0, -1.0];
+
+    // Train a network on this dummy dataset
     let mlp = MLP::new(3, &[4, 4]);
+    train(&mlp, &xs, &ys);
 
-    let output = mlp.forward(Value::vec(&[1.0, 2.0, 3.0]));
-    output.backward();
+    // Test the network on the first entry
 
-    println!("Output: {}, Shape: {:?}", output.value(), mlp.shape())
+    let output = mlp.forward(Value::vec(xs[0]));
+    println!("Output: {}, Expected: {}", output.value(), ys[0]);
 }
 
 fn dump(out: &Value) {
@@ -380,9 +450,9 @@ fn dump(out: &Value) {
         println!(
             "{}V={:?} O={:?} G={:?} ID={:?}",
             prefix,
-            out.0.borrow().value,
-            out.0.borrow().op,
-            out.0.borrow().gradient,
+            out.value(),
+            out.op(),
+            out.gradient(),
             out.0.as_ptr()
         );
         for children in out.0.borrow().children.iter() {
