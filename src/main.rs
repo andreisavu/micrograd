@@ -1,3 +1,4 @@
+use rand::distributions::{Distribution, Uniform};
 use std::iter::zip;
 use std::ops;
 use std::{cell::RefCell, rc::Rc};
@@ -181,12 +182,12 @@ impl ops::Div<Value> for Value {
 }
 
 //
-// Step 3. Each Value object can know its local gradient with respect to
+// Step 3. Each Value object in a graph can know its local gradient with respect to
 // the overall expression. This function calculates that gradient value.
 //
 
 impl Value {
-    fn compute_gradients(&self) {
+    fn backward(&self) {
         fn _reset_children_gradients_and_visited(node: &Value) {
             for children in node.0.borrow().children.iter() {
                 children.0.borrow_mut().gradient = 0.0;
@@ -196,7 +197,7 @@ impl Value {
         }
         _reset_children_gradients_and_visited(self);
 
-        // Run topological sorting to compute the correct list of parameters
+        // Run topological sorting to compute the ordered list of parameters
 
         fn _find_leaf_nodes_not_visited(node: &Value) -> Vec<Value> {
             let mut result: Vec<Value> = Vec::new();
@@ -248,7 +249,6 @@ impl Value {
                         .inc_gradient((1.0 - out_value * out_value) * out_gradient);
                 }
                 Op::Exp => {
-                    println!("Val: {} Grad: {}", out_value, out_gradient);
                     node.only_child().inc_gradient(out_value * out_gradient);
                 }
                 Op::Pow => {
@@ -268,42 +268,51 @@ impl Value {
 //
 
 struct Neuron {
-    output: Value,
+    weights: Vec<Value>,
+    bias: Value,
 }
 
 impl Neuron {
-    fn new(inputs: &[f64], weights: &[f64], bias: f64) -> Neuron {
-        let mut input_values = Vec::new();
-        let mut weight_values = Vec::new();
+    fn new(inputs: usize) -> Neuron {
+        let mut rng = rand::thread_rng();
+        let uniform = Uniform::new_inclusive(-1.0, 1.0);
 
-        let mut output = Value::new(0.0);
-        for (raw_input, raw_weight) in zip(inputs, weights) {
-            let input = Value::new(*raw_input);
-            input_values.push(input.clone());
-
-            let weight = Value::new(*raw_weight);
-            weight_values.push(weight.clone());
-
-            output = output + input * weight;
+        let mut weights: Vec<Value> = Vec::new();
+        for _ in 1..=inputs {
+            weights.push(Value::new(uniform.sample(&mut rng)));
         }
 
-        let exp = ((output + Value::new(bias)) * 2.0).exp();
         Neuron {
-            output: (exp.clone() - 1.0) / (exp.clone() + 1.0),
+            weights: weights,
+            bias: Value::new(uniform.sample(&mut rng)),
         }
+    }
 
-        // Neuron {
-        //     output: (output + Value::new(bias)).tanh(),
-        // }
+    fn forward(&self, inputs: &[f64]) -> Value {
+        assert!(inputs.len() == self.weights.len());
+        let mut output = self.bias.clone();
+        for (input, weight) in zip(inputs, self.weights.iter()) {
+            output = output + Value::new(*input) * weight.clone();
+        }
+        output.tanh()
+    }
+
+    fn parameters(&self) -> Vec<Value> {
+        let mut result = self.weights.clone();
+        result.push(self.bias.clone());
+        result
     }
 }
 
 fn main() {
-    let neuron = Neuron::new(&[2.0, 0.0], &[-3.0, 1.0], 6.8813735870195432);
+    let neuron = Neuron::new(2);
 
-    neuron.output.compute_gradients();
+    let output = neuron.forward(&[1.0, 2.0]);
+    output.backward();
 
-    dump(&neuron.output);
+    for p in neuron.parameters() {
+        dump(&p);
+    }
 }
 
 fn dump(out: &Value) {
