@@ -382,6 +382,10 @@ impl MLP {
     }
 }
 
+//
+// Step 6. Select a loss function.
+//
+
 fn sum_of_squared_errors_loss(actual: Vec<Value>, expected: Vec<Value>) -> Value {
     assert!(actual.len() == expected.len());
     let mut result = Value::new(0.0);
@@ -391,6 +395,10 @@ fn sum_of_squared_errors_loss(actual: Vec<Value>, expected: Vec<Value>) -> Value
     }
     result
 }
+
+//
+// Step 7. Setup a training loop.
+//
 
 fn train(mlp: &MLP, xs: &[&[f64]], ys: &[f64]) {
     let mut count = 0;
@@ -423,6 +431,10 @@ fn train(mlp: &MLP, xs: &[&[f64]], ys: &[f64]) {
     }
 }
 
+//
+// Step 8. A typical train/eval main function.
+//
+
 fn main() {
     let xs: &[&[f64]] = &[
         &[1.0, 6.0, 0.0],
@@ -440,7 +452,6 @@ fn main() {
     train(&mlp, &xs, &ys);
 
     // Test the network on the first entry
-
     let output = mlp.forward(Value::vec(xs[0]));
     println!("Output: {}, Expected: {}", output.value(), ys[0]);
 }
