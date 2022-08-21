@@ -3,11 +3,13 @@ use std::ops;
 use std::{cell::RefCell, rc::Rc};
 
 // Implementation based on the following tutorial by Andrej Karpathy going into
-// the details on how he built the micrograd library in Python. Doing the same
-// in Rust is not entirely trivial given how the compiler handles state.
+// the details on how he built the micrograd library in Python.
 
 // See the video at: https://www.youtube.com/watch?v=VMj-3S1tku0
 // https://github.com/karpathy/micrograd
+
+// Doing the same in Rust is not entirely a trivial code translation tasks because
+// of the fact that operating on shared memory requires jumping through some hoops.
 
 //
 // Step 1. Define the core state object and the mutable expression graph.
@@ -20,7 +22,7 @@ enum Op {
     Multiply,
     Tanh,
     Exp,
-    Pow
+    Pow,
 }
 
 #[derive(Debug)]
@@ -29,6 +31,7 @@ struct ValueState {
     children: Vec<Value>,
     gradient: f64,
     op: Op,
+    visited: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -41,6 +44,17 @@ impl Value {
             children: Vec::new(),
             gradient: 0.0,
             op: Op::None,
+            visited: false,
+        })))
+    }
+
+    fn from(value: f64, children: Vec<Value>, op: Op) -> Value {
+        Value(Rc::new(RefCell::new(ValueState {
+            value: value,
+            children: children,
+            gradient: 0.0,
+            op: op,
+            visited: false,
         })))
     }
 
@@ -54,10 +68,12 @@ impl Value {
     }
 
     fn lhs(&self) -> Value {
+        assert!(self.0.borrow().children.len() == 2);
         self.child(0)
     }
 
     fn rhs(&self) -> Value {
+        assert!(self.0.borrow().children.len() == 2);
         self.child(1)
     }
 
@@ -76,6 +92,10 @@ impl Value {
     fn op(&self) -> Op {
         self.0.borrow().op.clone()
     }
+
+    fn visited(&self) -> bool {
+        self.0.borrow().visited
+    }
 }
 
 //
@@ -84,30 +104,15 @@ impl Value {
 
 impl Value {
     fn tanh(self) -> Value {
-        Value(Rc::new(RefCell::new(ValueState {
-            value: self.value().tanh(),
-            children: vec![self.clone()],
-            gradient: 0.0,
-            op: Op::Tanh,
-        })))
+        Value::from(self.value().tanh(), vec![self.clone()], Op::Tanh)
     }
 
     fn exp(self) -> Value {
-        Value(Rc::new(RefCell::new(ValueState {
-            value: self.value().exp(),
-            children: vec![self.clone()],
-            gradient: 0.0,
-            op: Op::Exp,
-        })))
+        Value::from(self.value().exp(), vec![self.clone()], Op::Exp)
     }
 
     fn pow(self, value: f64) -> Value {
-        Value(Rc::new(RefCell::new(ValueState {
-            value: self.value().powf(value),
-            children: vec![self.clone()],
-            gradient: 0.0,
-            op: Op::Pow,
-        })))
+        Value::from(self.value().powf(value), vec![self.clone()], Op::Pow)
     }
 }
 
@@ -115,30 +120,11 @@ impl ops::Add<Value> for Value {
     type Output = Value;
 
     fn add(self, rhs: Value) -> Value {
-        Value(Rc::new(RefCell::new(ValueState {
-            value: self.value() + rhs.value(),
-            children: vec![self.clone(), rhs.clone()],
-            gradient: 0.0,
-            op: Op::Plus,
-        })))
-    }
-}
-
-impl ops::Add<f64> for Value {
-    type Output = Value;
-
-    fn add(self, rhs: f64) -> Value {
-        self.0.borrow_mut().value += rhs;
-        self
-    }
-}
-
-impl ops::Sub<f64> for Value {
-    type Output = Value;
-
-    fn sub(self, rhs: f64) -> Self::Output {
-        self.0.borrow_mut().value -= rhs;
-        self
+        Value::from(
+            self.value() + rhs.value(),
+            vec![self.clone(), rhs.clone()],
+            Op::Plus,
+        )
     }
 }
 
@@ -146,12 +132,51 @@ impl ops::Mul<Value> for Value {
     type Output = Value;
 
     fn mul(self, rhs: Value) -> Value {
-        Value(Rc::new(RefCell::new(ValueState {
-            value: self.value() * rhs.value(),
-            children: vec![self.clone(), rhs.clone()],
-            gradient: 0.0,
-            op: Op::Multiply,
-        })))
+        Value::from(
+            self.value() * rhs.value(),
+            vec![self.clone(), rhs.clone()],
+            Op::Multiply,
+        )
+    }
+}
+
+impl ops::Sub<Value> for Value {
+    type Output = Value;
+
+    fn sub(self, rhs: Value) -> Value {
+        self + (rhs * -1.0)
+    }
+}
+
+impl ops::Add<f64> for Value {
+    type Output = Value;
+
+    fn add(self, rhs: f64) -> Value {
+        self + Value::new(rhs)
+    }
+}
+
+impl ops::Sub<f64> for Value {
+    type Output = Value;
+
+    fn sub(self, rhs: f64) -> Value {
+        self + Value::new(-rhs)
+    }
+}
+
+impl ops::Mul<f64> for Value {
+    type Output = Value;
+
+    fn mul(self, rhs: f64) -> Value {
+        self * Value::new(rhs)
+    }
+}
+
+impl ops::Div<Value> for Value {
+    type Output = Value;
+
+    fn div(self, rhs: Value) -> Value {
+        self * rhs.pow(-1.0)
     }
 }
 
@@ -160,45 +185,82 @@ impl ops::Mul<Value> for Value {
 // the overall expression. This function calculates that gradient value.
 //
 
-fn compute_gradients(out: &Value) {
-    out.0.borrow_mut().gradient = 1.0;
+impl Value {
+    fn compute_gradients(&self) {
+        fn _reset_children_gradients_and_visited(node: &Value) {
+            for children in node.0.borrow().children.iter() {
+                children.0.borrow_mut().gradient = 0.0;
+                children.0.borrow_mut().visited = false;
+                _reset_children_gradients_and_visited(children);
+            }
+        }
+        _reset_children_gradients_and_visited(self);
 
-    fn _reset_children_gradients(node: &Value) {
-        for children in node.0.borrow().children.iter() {
-            children.0.borrow_mut().gradient = 0.0;
-            _reset_children_gradients(children);
+        // Run topological sorting to compute the correct list of parameters
+
+        fn _find_leaf_nodes_not_visited(node: &Value) -> Vec<Value> {
+            let mut result: Vec<Value> = Vec::new();
+            if !node.visited() {
+                let mut count = 0;
+                for child in node.0.borrow().children.iter() {
+                    if !child.visited() {
+                        result.append(&mut _find_leaf_nodes_not_visited(child));
+                        count += 1;
+                    }
+                }
+                if count == 0 {
+                    node.0.borrow_mut().visited = true;
+                    result.push(node.clone())
+                }
+            }
+            result
+        }
+
+        let mut parameters: Vec<Value> = Vec::new();
+        loop {
+            let mut leafs = _find_leaf_nodes_not_visited(self);
+            if leafs.len() == 0 {
+                break;
+            }
+            parameters.append(&mut leafs);
+        }
+
+        parameters.reverse();
+        parameters[0].0.borrow_mut().gradient = 1.0;
+
+        // Fill in all the gradients in reverse topological order
+
+        for node in parameters {
+            let out_gradient = node.gradient();
+            let out_value = node.value();
+
+            match node.op() {
+                Op::Plus => {
+                    node.lhs().inc_gradient(out_gradient);
+                    node.rhs().inc_gradient(out_gradient);
+                }
+                Op::Multiply => {
+                    node.lhs().inc_gradient(node.rhs().value() * out_gradient);
+                    node.rhs().inc_gradient(node.lhs().value() * out_gradient);
+                }
+                Op::Tanh => {
+                    node.only_child()
+                        .inc_gradient((1.0 - out_value * out_value) * out_gradient);
+                }
+                Op::Exp => {
+                    println!("Val: {} Grad: {}", out_value, out_gradient);
+                    node.only_child().inc_gradient(out_value * out_gradient);
+                }
+                Op::Pow => {
+                    let child_value = node.only_child().value();
+                    let exponent = out_value.log10() / child_value.log10();
+                    node.only_child()
+                        .inc_gradient(exponent * out_value / child_value * out_gradient);
+                }
+                _ => (),
+            }
         }
     }
-
-    fn _compute_children_gradients(node: &Value) {
-        let out_gradient = node.gradient();
-        let out_value = node.value();
-
-        match node.op() {
-            Op::Plus => {
-                node.lhs().inc_gradient(out_gradient);
-                node.rhs().inc_gradient(out_gradient);
-            }
-            Op::Multiply => {
-                node.lhs().inc_gradient(node.rhs().value() * out_gradient);
-                node.rhs().inc_gradient(node.lhs().value() * out_gradient);
-            }
-            Op::Tanh => {
-                node.only_child()
-                    .inc_gradient((1.0 - out_value * out_value) * out_gradient);
-            }
-            Op::Exp => {
-                node.only_child().inc_gradient(out_value * out_gradient);
-            }
-            _ => (),
-        }
-        for children in node.0.borrow().children.iter() {
-            _compute_children_gradients(children);
-        }
-    }
-
-    _reset_children_gradients(out);
-    _compute_children_gradients(out)
 }
 
 //
@@ -225,17 +287,21 @@ impl Neuron {
             output = output + input * weight;
         }
 
-        let bias_value = Value::new(bias);
+        let exp = ((output + Value::new(bias)) * 2.0).exp();
         Neuron {
-            output: (output + bias_value).tanh(),
+            output: (exp.clone() - 1.0) / (exp.clone() + 1.0),
         }
+
+        // Neuron {
+        //     output: (output + Value::new(bias)).tanh(),
+        // }
     }
 }
 
 fn main() {
     let neuron = Neuron::new(&[2.0, 0.0], &[-3.0, 1.0], 6.8813735870195432);
 
-    compute_gradients(&neuron.output);
+    neuron.output.compute_gradients();
 
     dump(&neuron.output);
 }
