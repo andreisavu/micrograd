@@ -59,6 +59,13 @@ impl Value {
         })))
     }
 
+    fn vec(values: &[f64]) -> Vec<Value> {
+        values
+            .iter()
+            .map(|el| Value::new(*el))
+            .collect::<Vec<Value>>()
+    }
+
     fn child(&self, index: usize) -> Value {
         self.0.borrow().children[index].clone()
     }
@@ -182,7 +189,7 @@ impl ops::Div<Value> for Value {
 }
 
 //
-// Step 3. Each Value object in a graph can know its local gradient with respect to
+// Step 3. Each Value object in a graph knows its local gradient with respect to
 // the overall expression. This function calculates that gradient value.
 //
 
@@ -273,12 +280,12 @@ struct Neuron {
 }
 
 impl Neuron {
-    fn new(inputs: usize) -> Neuron {
+    fn new(input_size: usize) -> Neuron {
         let mut rng = rand::thread_rng();
         let uniform = Uniform::new_inclusive(-1.0, 1.0);
 
         let mut weights: Vec<Value> = Vec::new();
-        for _ in 1..=inputs {
+        for _ in 1..=input_size {
             weights.push(Value::new(uniform.sample(&mut rng)));
         }
 
@@ -288,11 +295,11 @@ impl Neuron {
         }
     }
 
-    fn forward(&self, inputs: &[f64]) -> Value {
+    fn forward(&self, inputs: Vec<Value>) -> Value {
         assert!(inputs.len() == self.weights.len());
         let mut output = self.bias.clone();
         for (input, weight) in zip(inputs, self.weights.iter()) {
-            output = output + Value::new(*input) * weight.clone();
+            output = output + input * weight.clone();
         }
         output.tanh()
     }
@@ -304,15 +311,68 @@ impl Neuron {
     }
 }
 
-fn main() {
-    let neuron = Neuron::new(2);
+//
+// Step 5. Assemble Neurons into an MLP (https://en.wikipedia.org/wiki/Multilayer_perceptron)
+//
 
-    let output = neuron.forward(&[1.0, 2.0]);
+struct Layer(Vec<Neuron>);
+
+impl Layer {
+    fn new(input_size: usize, output_size: usize) -> Layer {
+        let mut neurons: Vec<Neuron> = Vec::new();
+        for _ in 1..=output_size {
+            neurons.push(Neuron::new(input_size));
+        }
+        Layer(neurons)
+    }
+
+    fn forward(&self, inputs: Vec<Value>) -> Vec<Value> {
+        let mut result: Vec<Value> = Vec::new();
+        for neuron in self.0.iter() {
+            result.push(neuron.forward(inputs.clone()));
+        }
+        result
+    }
+}
+
+struct MLP(Vec<Layer>);
+
+impl MLP {
+    fn new(input_size: usize, hidden_layers_size: &[usize]) -> MLP {
+        let mut layers: Vec<Layer> = Vec::new();
+        let hlc = hidden_layers_size.len();
+        layers.push(Layer::new(input_size, hidden_layers_size[0]));
+        for i in 0..hlc - 1 {
+            layers.push(Layer::new(hidden_layers_size[i], hidden_layers_size[i + 1]))
+        }
+        layers.push(Layer::new(hidden_layers_size[hlc - 1], 1));
+        MLP(layers)
+    }
+
+    fn forward(&self, inputs: Vec<Value>) -> Value {
+        let mut outputs: Vec<Value> = inputs;
+        for layer in self.0.iter() {
+            outputs = layer.forward(outputs)
+        }
+        assert!(outputs.len() == 1);
+        outputs[0].clone()
+    }
+
+    fn shape(&self) -> Vec<usize> {
+        let mut sizes: Vec<usize> = Vec::new();
+        sizes.push(self.0[0].0[0].weights.len());
+        sizes.append(&mut self.0.iter().map(|el| el.0.len()).collect::<Vec<usize>>());
+        sizes
+    }
+}
+
+fn main() {
+    let mlp = MLP::new(3, &[4, 4]);
+
+    let output = mlp.forward(Value::vec(&[1.0, 2.0, 3.0]));
     output.backward();
 
-    for p in neuron.parameters() {
-        dump(&p);
-    }
+    println!("Output: {}, Shape: {:?}", output.value(), mlp.shape())
 }
 
 fn dump(out: &Value) {
